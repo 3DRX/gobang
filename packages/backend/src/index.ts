@@ -2,8 +2,11 @@ import { DurableObject } from "cloudflare:workers";
 import {
 	applyMove,
 	createInitialState,
-	getRoomExpirationAt,
+	ensureTurnClock,
+	finishByTimeout,
+	getNextAlarmAt,
 	shouldDeleteRoom,
+	shouldTimeoutTurn,
 	type GameState,
 	type MoveErrorCode,
 	type Seat,
@@ -61,12 +64,12 @@ export class GameRoom extends DurableObject<Env> {
 
 		const state = createInitialState(roomId);
 		this.saveState(state);
-		this.scheduleCleanup(state);
+		this.scheduleNextAlarm(state);
 		return toPublicState(state);
 	}
 
 	snapshot(): GameState | null {
-		const state = this.loadState();
+		const state = this.loadCurrentState();
 		return state ? toPublicState(state) : null;
 	}
 
@@ -128,8 +131,15 @@ export class GameRoom extends DurableObject<Env> {
 			return;
 		}
 
+		const timedOutState = this.applyTimeoutIfNeeded(state);
+		if (timedOutState !== state) {
+			this.broadcastSnapshotFromState(timedOutState);
+			this.scheduleNextAlarm(timedOutState);
+			return;
+		}
+
 		if (!shouldDeleteRoom(state)) {
-			this.scheduleCleanup(state);
+			this.scheduleNextAlarm(state);
 			return;
 		}
 
@@ -147,7 +157,7 @@ export class GameRoom extends DurableObject<Env> {
 	}
 
 	private handleJoin(ws: WebSocket, message: Extract<ClientMessage, { type: "join" }>): void {
-		const state = this.loadState();
+		const state = this.loadCurrentState();
 		if (!state) {
 			send(ws, { type: "error", code: "room_not_found", message: "This room does not exist." });
 			ws.close(1008, "room_not_found");
@@ -202,12 +212,13 @@ export class GameRoom extends DurableObject<Env> {
 			return;
 		}
 
+		const now = Date.now();
 		nextState = updateStatusForPlayers({
 			...nextState,
-			updatedAt: new Date().toISOString(),
-		});
+			updatedAt: new Date(now).toISOString(),
+		}, now);
 		this.saveState(nextState);
-		this.scheduleCleanup(nextState);
+		this.scheduleNextAlarm(nextState);
 		ws.serializeAttachment({ clientId, seat: player.seat });
 		this.broadcastSnapshot();
 	}
@@ -219,7 +230,7 @@ export class GameRoom extends DurableObject<Env> {
 			return;
 		}
 
-		const state = this.loadState();
+		const state = this.loadCurrentState();
 		if (!state) {
 			send(ws, { type: "error", code: "room_not_found", message: "This room does not exist." });
 			return;
@@ -235,6 +246,14 @@ export class GameRoom extends DurableObject<Env> {
 			return;
 		}
 
+		if (shouldTimeoutTurn(state)) {
+			const timedOutState = this.applyTimeoutIfNeeded(state);
+			this.broadcastSnapshotFromState(timedOutState);
+			this.scheduleNextAlarm(timedOutState);
+			send(ws, { type: "error", code: "game_over", message: "Your turn timed out." });
+			return;
+		}
+
 		const result = applyMove(state, attachment.seat, x, y);
 		if (!result.ok) {
 			send(ws, { type: "error", code: result.code, message: result.message });
@@ -242,16 +261,20 @@ export class GameRoom extends DurableObject<Env> {
 		}
 
 		this.saveState(result.state);
-		this.scheduleCleanup(result.state);
+		this.scheduleNextAlarm(result.state);
 		this.broadcastSnapshot();
 	}
 
 	private broadcastSnapshot(): void {
-		const state = this.loadState();
+		const state = this.loadCurrentState();
 		if (!state) {
 			return;
 		}
 
+		this.broadcastSnapshotFromState(state);
+	}
+
+	private broadcastSnapshotFromState(state: StoredGameState): void {
 		const publicState = toPublicState(state);
 		for (const socket of this.ctx.getWebSockets()) {
 			const attachment = getAttachment(socket);
@@ -267,7 +290,7 @@ export class GameRoom extends DurableObject<Env> {
 	}
 
 	private updatePlayerConnection(clientId: string, connected: boolean): void {
-		const state = this.loadState();
+		const state = this.loadCurrentState();
 		if (!state) {
 			return;
 		}
@@ -280,7 +303,26 @@ export class GameRoom extends DurableObject<Env> {
 			updatedAt: new Date().toISOString(),
 		};
 		this.saveState(nextState);
-		this.scheduleCleanup(nextState);
+		this.scheduleNextAlarm(nextState);
+	}
+
+	private loadCurrentState(): StoredGameState | null {
+		const state = this.loadState();
+		if (!state) {
+			return null;
+		}
+
+		return this.applyTimeoutIfNeeded(state);
+	}
+
+	private applyTimeoutIfNeeded(state: StoredGameState): StoredGameState {
+		if (!shouldTimeoutTurn(state)) {
+			return state;
+		}
+
+		const nextState = finishByTimeout(state);
+		this.saveState(nextState);
+		return nextState;
 	}
 
 	private loadState(): StoredGameState | null {
@@ -316,8 +358,8 @@ export class GameRoom extends DurableObject<Env> {
 		this.ctx.storage.sql.exec("DELETE FROM rooms WHERE id = ?", ROOM_ROW_ID);
 	}
 
-	private scheduleCleanup(state: StoredGameState): void {
-		this.ctx.storage.setAlarm(getRoomExpirationAt(state));
+	private scheduleNextAlarm(state: StoredGameState): void {
+		this.ctx.storage.setAlarm(getNextAlarmAt(state));
 	}
 }
 
@@ -445,15 +487,17 @@ function normalizeDisplayName(displayName: string): string {
 	return trimmed ? trimmed.slice(0, 24) : "Player";
 }
 
-function updateStatusForPlayers(state: StoredGameState): StoredGameState {
+function updateStatusForPlayers(state: StoredGameState, now = Date.now()): StoredGameState {
 	if (state.winner) {
 		return { ...state, status: "finished" };
 	}
 
-	return {
+	const nextState: StoredGameState = {
 		...state,
 		status: state.players.length === 2 ? "playing" : "waiting",
 	};
+
+	return ensureTurnClock(nextState, now);
 }
 
 function send(ws: WebSocket, message: ServerMessage): void {

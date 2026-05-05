@@ -3,7 +3,10 @@ import { test } from "node:test";
 import {
 	applyMove,
 	createInitialState,
+	ensureTurnClock,
+	finishByTimeout,
 	getRoomExpirationAt,
+	shouldTimeoutTurn,
 	shouldDeleteRoom,
 } from "../src/game.ts";
 
@@ -164,6 +167,31 @@ test("expires finished rooms after the shorter finished ttl", () => {
 	assert.equal(getRoomExpirationAt(state, policy), Date.parse("2026-05-06T00:00:00.100Z"));
 	assert.equal(shouldDeleteRoom(state, Date.parse("2026-05-06T00:00:00.099Z"), policy), false);
 	assert.equal(shouldDeleteRoom(state, Date.parse("2026-05-06T00:00:00.100Z"), policy), true);
+});
+
+test("starts and advances the per-turn clock", () => {
+	let state = createInitialState("test-room", "2026-05-06T00:00:00.000Z");
+	state = ensureTurnClock({ ...state, status: "playing" }, Date.parse("2026-05-06T00:00:00.000Z"));
+
+	assert.equal(state.turnDeadlineAt, "2026-05-06T00:01:00.000Z");
+	assert.equal(shouldTimeoutTurn(state, Date.parse("2026-05-06T00:00:59.999Z")), false);
+	assert.equal(shouldTimeoutTurn(state, Date.parse("2026-05-06T00:01:00.000Z")), true);
+
+	const result = applyMove(state, "black", 0, 0, "2026-05-06T00:00:30.000Z");
+	assert.equal(result.ok, true);
+	assert.equal(result.state.turn, "white");
+	assert.equal(result.state.turnDeadlineAt, "2026-05-06T00:01:30.000Z");
+});
+
+test("finishes the game when the current player times out", () => {
+	let state = createInitialState("test-room", "2026-05-06T00:00:00.000Z");
+	state = ensureTurnClock({ ...state, status: "playing" }, Date.parse("2026-05-06T00:00:00.000Z"));
+	const timedOut = finishByTimeout(state, "2026-05-06T00:01:00.000Z");
+
+	assert.equal(timedOut.status, "finished");
+	assert.equal(timedOut.winner, "white");
+	assert.equal(timedOut.timedOutSeat, "black");
+	assert.equal(timedOut.turnDeadlineAt, null);
 });
 
 function play(points) {

@@ -1,4 +1,5 @@
 export const BOARD_SIZE = 15;
+export const TURN_TIMEOUT_MS = 60 * 1000;
 export const UNFINISHED_ROOM_TTL_MS = 2 * 60 * 60 * 1000;
 export const FINISHED_ROOM_TTL_MS = 15 * 60 * 1000;
 
@@ -47,7 +48,9 @@ export interface StoredGameState {
 	players: StoredPlayer[];
 	board: Cell[][];
 	turn: Seat;
+	turnDeadlineAt: string | null;
 	winner: Seat | null;
+	timedOutSeat: Seat | null;
 	winningLine: WinningPoint[];
 	lastMove: Move | null;
 	moves: Move[];
@@ -62,7 +65,9 @@ export interface GameState {
 	players: Player[];
 	board: Cell[][];
 	turn: Seat;
+	turnDeadlineAt: string | null;
 	winner: Seat | null;
+	timedOutSeat: Seat | null;
 	winningLine: WinningPoint[];
 	lastMove: PublicMove | null;
 	moveCount: number;
@@ -102,7 +107,9 @@ export function createInitialState(roomId: string, now = new Date().toISOString(
 		players: [],
 		board: createEmptyBoard(),
 		turn: "black",
+		turnDeadlineAt: null,
 		winner: null,
+		timedOutSeat: null,
 		winningLine: [],
 		lastMove: null,
 		moves: [],
@@ -130,7 +137,9 @@ export function toPublicState(state: StoredGameState): GameState {
 		})),
 		board: state.board,
 		turn: state.turn,
+		turnDeadlineAt: state.turnDeadlineAt ?? null,
 		winner: state.winner,
+		timedOutSeat: state.timedOutSeat ?? null,
 		winningLine: state.winningLine,
 		lastMove,
 		moveCount: state.moveCount,
@@ -141,6 +150,41 @@ export function toPublicState(state: StoredGameState): GameState {
 
 export function nextSeat(seat: Seat): Seat {
 	return seat === "black" ? "white" : "black";
+}
+
+export function getTurnDeadlineAt(now = Date.now()): string {
+	return new Date(now + TURN_TIMEOUT_MS).toISOString();
+}
+
+export function shouldTimeoutTurn(state: StoredGameState, now = Date.now()): boolean {
+	return (
+		state.status === "playing" &&
+		!state.winner &&
+		typeof state.turnDeadlineAt === "string" &&
+		now >= Date.parse(state.turnDeadlineAt)
+	);
+}
+
+export function finishByTimeout(state: StoredGameState, now = new Date().toISOString()): StoredGameState {
+	return {
+		...state,
+		status: "finished",
+		winner: nextSeat(state.turn),
+		timedOutSeat: state.turn,
+		turnDeadlineAt: null,
+		updatedAt: now,
+	};
+}
+
+export function ensureTurnClock(state: StoredGameState, now = Date.now()): StoredGameState {
+	if (state.status !== "playing" || state.winner || state.turnDeadlineAt) {
+		return state;
+	}
+
+	return {
+		...state,
+		turnDeadlineAt: getTurnDeadlineAt(now),
+	};
 }
 
 export function applyMove(
@@ -173,6 +217,8 @@ export function applyMove(
 	const move: Move = { seat, x, y, at: now };
 	const winner = winningLine.length >= 5 ? seat : null;
 	const moveCount = state.moveCount + 1;
+	const nextTurn = nextSeat(seat);
+	const nowMs = Date.parse(now);
 
 	return {
 		ok: true,
@@ -180,8 +226,10 @@ export function applyMove(
 			...state,
 			status: winner ? "finished" : "playing",
 			board,
-			turn: winner ? state.turn : nextSeat(seat),
+			turn: winner ? state.turn : nextTurn,
+			turnDeadlineAt: winner ? null : getTurnDeadlineAt(nowMs),
 			winner,
+			timedOutSeat: null,
 			winningLine,
 			lastMove: move,
 			moves: [...state.moves, move],
@@ -211,6 +259,15 @@ export function shouldDeleteRoom(
 	policy: CleanupPolicy = DEFAULT_CLEANUP_POLICY,
 ): boolean {
 	return now >= getRoomExpirationAt(state, policy);
+}
+
+export function getNextAlarmAt(state: StoredGameState): number {
+	const cleanupAt = getRoomExpirationAt(state);
+	if (state.status === "playing" && state.turnDeadlineAt) {
+		return Math.min(cleanupAt, Date.parse(state.turnDeadlineAt));
+	}
+
+	return cleanupAt;
 }
 
 function cloneBoard(board: Cell[][]): Cell[][] {

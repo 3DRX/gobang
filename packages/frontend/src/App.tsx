@@ -27,6 +27,11 @@ interface WinningPoint {
   y: number
 }
 
+interface PendingPoint extends WinningPoint {
+  moveCount: number
+  turn: Seat
+}
+
 interface PublicMove {
   seat: Seat
   x: number
@@ -41,7 +46,9 @@ interface GameState {
   players: Player[]
   board: Cell[][]
   turn: Seat
+  turnDeadlineAt: string | null
   winner: Seat | null
+  timedOutSeat: Seat | null
   winningLine: WinningPoint[]
   lastMove: PublicMove | null
   moveCount: number
@@ -145,6 +152,8 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
   const [seat, setSeat] = useState<Seat | null>(null)
   const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [error, setError] = useState('')
+  const [pendingPoint, setPendingPoint] = useState<PendingPoint | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const socketRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<number | null>(null)
@@ -180,6 +189,7 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
 
         if (message.type === 'error') {
           setError(message.message)
+          setPendingPoint(null)
           if (message.code === 'room_full') {
             terminalRef.current = true
             setConnection('room_full')
@@ -221,6 +231,11 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
     }
   }, [clientId, displayName, roomId])
 
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 250)
+    return () => window.clearInterval(interval)
+  }, [])
+
   const winningPoints = useMemo(() => {
     return new Set((state?.winningLine ?? []).map((point) => pointKey(point.x, point.y)))
   }, [state?.winningLine])
@@ -232,12 +247,28 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
   const inviteUrl = new URL(`/room/${roomId}`, window.location.href).toString()
   const blackPlayer = state?.players.find((player) => player.seat === 'black') ?? null
   const whitePlayer = state?.players.find((player) => player.seat === 'white') ?? null
+  const timeRemainingMs = getTimeRemainingMs(state?.turnDeadlineAt ?? null, now)
+  const activePendingPoint =
+    pendingPoint &&
+    state &&
+    canPlay &&
+    pendingPoint.moveCount === state.moveCount &&
+    pendingPoint.turn === state.turn &&
+    !state.board[pendingPoint.y]?.[pendingPoint.x]
+      ? pendingPoint
+      : null
 
   const placeStone = (x: number, y: number) => {
-    if (!canPlay || state?.board[y]?.[x]) {
+    if (!canPlay || !state || state.board[y]?.[x]) {
       return
     }
 
+    if (activePendingPoint?.x !== x || activePendingPoint.y !== y) {
+      setPendingPoint({ x, y, moveCount: state.moveCount, turn: state.turn })
+      return
+    }
+
+    setPendingPoint(null)
     socketRef.current?.send(JSON.stringify({ type: 'placeStone', x, y }))
   }
 
@@ -272,13 +303,21 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
               const cell = state?.board[y]?.[x] ?? null
               const isLast = state?.lastMove?.x === x && state.lastMove.y === y
               const isWinning = winningPoints.has(pointKey(x, y))
+              const isTarget = !cell && activePendingPoint?.x === x && activePendingPoint.y === y
 
               return (
                 <button
-                  aria-label={cell ? `${cell} stone at ${x + 1}, ${y + 1}` : `Place at ${x + 1}, ${y + 1}`}
+                  aria-label={
+                    cell
+                      ? `${cell} stone at ${x + 1}, ${y + 1}`
+                      : isTarget
+                        ? `Confirm move at ${x + 1}, ${y + 1}`
+                        : `Target ${x + 1}, ${y + 1}`
+                  }
                   className={[
                     'board-cell',
                     cell ? `stone-${cell}` : '',
+                    isTarget ? `is-target target-${seat}` : '',
                     isLast ? 'is-last' : '',
                     isWinning ? 'is-winning' : '',
                   ]
@@ -299,7 +338,14 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
       </section>
 
       <aside className="side-panel" aria-label="Game status">
-        <StatusCard connection={connection} error={error} seat={seat} state={state} />
+        <StatusCard
+          connection={connection}
+          error={error}
+          pendingPoint={activePendingPoint}
+          seat={seat}
+          state={state}
+          timeRemainingMs={timeRemainingMs}
+        />
 
         <div className="players">
           <PlayerSeat label="Black" player={blackPlayer} seat="black" selfSeat={seat} />
@@ -323,16 +369,20 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
 function StatusCard({
   connection,
   error,
+  pendingPoint,
   seat,
   state,
+  timeRemainingMs,
 }: {
   connection: ConnectionStatus
   error: string
+  pendingPoint: WinningPoint | null
   seat: Seat | null
   state: GameState | null
+  timeRemainingMs: number | null
 }) {
   const headline = getStatusHeadline(connection, state, seat)
-  const detail = getStatusDetail(connection, state, seat, error)
+  const detail = getStatusDetail(connection, state, seat, error, pendingPoint)
 
   return (
     <section className="status-card" aria-live="polite">
@@ -348,6 +398,10 @@ function StatusCard({
           <div>
             <dt>You</dt>
             <dd>{seat ? seatLabel(seat) : 'Pending'}</dd>
+          </div>
+          <div>
+            <dt>Clock</dt>
+            <dd>{formatClock(timeRemainingMs)}</dd>
           </div>
         </dl>
       ) : null}
@@ -387,6 +441,7 @@ function getStatusHeadline(connection: ConnectionStatus, state: GameState | null
   if (connection === 'reconnecting') return 'Reconnecting'
   if (connection === 'disconnected') return 'Disconnected'
   if (!state) return 'Connecting'
+  if (state.timedOutSeat) return state.timedOutSeat === seat ? 'Timed out' : 'Opponent timed out'
   if (state.winner) return state.winner === seat ? 'You won' : 'Game over'
   if (state.status === 'waiting') return 'Waiting for opponent'
   if (state.turn === seat) return 'Your turn'
@@ -398,6 +453,7 @@ function getStatusDetail(
   state: GameState | null,
   seat: Seat | null,
   error: string,
+  pendingPoint: WinningPoint | null,
 ): string {
   if (error && connection !== 'connected') return error
   if (connection === 'room_full') return 'Two players have already claimed this room.'
@@ -405,9 +461,12 @@ function getStatusDetail(
   if (connection === 'reconnecting') return 'Trying to restore the live game connection.'
   if (connection === 'disconnected') return 'The socket closed; reconnecting shortly.'
   if (!state) return 'Opening the realtime room.'
+  if (state.timedOutSeat) return `${seatLabel(state.timedOutSeat)} ran out of time.`
   if (state.winner) return `${seatLabel(state.winner)} completed five in a row.`
   if (state.status === 'waiting') return 'Share the invite link with one opponent.'
-  if (state.turn === seat) return 'Place a stone on an empty intersection.'
+  if (state.turn === seat) {
+    return pendingPoint ? 'Tap the target again to place the stone.' : 'Tap an intersection to preview your move.'
+  }
   return 'Watch the board while your opponent moves.'
 }
 
@@ -457,6 +516,22 @@ function storeDisplayName(displayName: string): void {
 
 function seatLabel(seat: Seat): string {
   return seat === 'black' ? 'Black' : 'White'
+}
+
+function getTimeRemainingMs(deadline: string | null, now: number): number | null {
+  if (!deadline) {
+    return null
+  }
+
+  return Math.max(0, Date.parse(deadline) - now)
+}
+
+function formatClock(timeRemainingMs: number | null): string {
+  if (timeRemainingMs === null) {
+    return '--'
+  }
+
+  return `${Math.ceil(timeRemainingMs / 1000)}s`
 }
 
 function pointKey(x: number, y: number): string {

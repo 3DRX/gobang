@@ -236,6 +236,24 @@ button {
   aspect-ratio: 1;
 }
 
+.board-cell.is-target span {
+  background: rgba(255, 253, 247, 0.36);
+  outline: 2px dashed rgba(29, 91, 122, 0.75);
+  outline-offset: 2px;
+}
+
+.board-cell.is-target.target-black span {
+  background:
+    radial-gradient(circle at 34% 30%, rgba(108, 102, 93, 0.54) 0 8%, transparent 9%),
+    radial-gradient(circle at 36% 30%, rgba(42, 41, 38, 0.74), rgba(5, 5, 5, 0.74) 68%);
+}
+
+.board-cell.is-target.target-white span {
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255, 255, 255, 0.72) 0 10%, transparent 11%),
+    radial-gradient(circle at 38% 35%, rgba(255, 253, 247, 0.76), rgba(217, 211, 200, 0.76) 74%);
+}
+
 .stone-black span,
 .seat-stone.stone-black {
   background:
@@ -301,7 +319,7 @@ button {
 
 .stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin: 8px 0 0;
 }
