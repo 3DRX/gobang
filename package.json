@@ -1,0 +1,14 @@
+{
+  "name": "gobang",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.0.5",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @gobang/backend --filter @gobang/frontend dev",
+    "dev:backend": "pnpm --filter @gobang/backend dev",
+    "dev:frontend": "pnpm --filter @gobang/frontend dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm --filter @gobang/frontend lint",
+    "deploy:backend": "pnpm --filter @gobang/backend deploy"
+  }
+}
