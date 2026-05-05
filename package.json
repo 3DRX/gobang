@@ -7,8 +7,9 @@
     "dev": "pnpm --parallel --filter @gobang/backend --filter @gobang/frontend dev",
     "dev:backend": "pnpm --filter @gobang/backend dev",
     "dev:frontend": "pnpm --filter @gobang/frontend dev",
-    "build": "pnpm -r build",
+    "build": "pnpm --filter @gobang/frontend build && pnpm --filter @gobang/backend build",
+    "test": "pnpm --filter @gobang/backend test",
     "lint": "pnpm --filter @gobang/frontend lint",
-    "deploy:backend": "pnpm --filter @gobang/backend deploy"
+    "deploy:backend": "pnpm --filter @gobang/frontend build && pnpm --filter @gobang/backend deploy"
   }
 }

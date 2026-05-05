@@ -2,12 +2,14 @@
 	"name": "@gobang/backend",
 	"version": "0.0.0",
 	"private": true,
+	"type": "module",
 	"scripts": {
 		"build": "tsc --noEmit",
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"cf-typegen": "wrangler types"
+		"cf-typegen": "wrangler types",
+		"test": "node --test test/*.test.mjs"
 	},
 	"devDependencies": {
 		"typescript": "^6.0.3",
