@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import {
 	applyMove,
 	createInitialState,
+	getRoomExpirationAt,
+	shouldDeleteRoom,
 	type GameState,
 	type MoveErrorCode,
 	type Seat,
@@ -59,6 +61,7 @@ export class GameRoom extends DurableObject<Env> {
 
 		const state = createInitialState(roomId);
 		this.saveState(state);
+		this.scheduleCleanup(state);
 		return toPublicState(state);
 	}
 
@@ -116,6 +119,31 @@ export class GameRoom extends DurableObject<Env> {
 			this.updatePlayerConnection(attachment.clientId, false);
 			this.broadcastSnapshot();
 		}
+	}
+
+	async alarm(): Promise<void> {
+		const state = this.loadState();
+		if (!state) {
+			await this.ctx.storage.deleteAlarm();
+			return;
+		}
+
+		if (!shouldDeleteRoom(state)) {
+			this.scheduleCleanup(state);
+			return;
+		}
+
+		for (const socket of this.ctx.getWebSockets()) {
+			send(socket, {
+				type: "error",
+				code: "room_not_found",
+				message: "This room has expired.",
+			});
+			socket.close(1000, "room_expired");
+		}
+
+		this.deleteState();
+		await this.ctx.storage.deleteAlarm();
 	}
 
 	private handleJoin(ws: WebSocket, message: Extract<ClientMessage, { type: "join" }>): void {
@@ -179,6 +207,7 @@ export class GameRoom extends DurableObject<Env> {
 			updatedAt: new Date().toISOString(),
 		});
 		this.saveState(nextState);
+		this.scheduleCleanup(nextState);
 		ws.serializeAttachment({ clientId, seat: player.seat });
 		this.broadcastSnapshot();
 	}
@@ -213,6 +242,7 @@ export class GameRoom extends DurableObject<Env> {
 		}
 
 		this.saveState(result.state);
+		this.scheduleCleanup(result.state);
 		this.broadcastSnapshot();
 	}
 
@@ -250,6 +280,7 @@ export class GameRoom extends DurableObject<Env> {
 			updatedAt: new Date().toISOString(),
 		};
 		this.saveState(nextState);
+		this.scheduleCleanup(nextState);
 	}
 
 	private loadState(): StoredGameState | null {
@@ -279,6 +310,14 @@ export class GameRoom extends DurableObject<Env> {
 			state.createdAt,
 			state.updatedAt,
 		);
+	}
+
+	private deleteState(): void {
+		this.ctx.storage.sql.exec("DELETE FROM rooms WHERE id = ?", ROOM_ROW_ID);
+	}
+
+	private scheduleCleanup(state: StoredGameState): void {
+		this.ctx.storage.setAlarm(getRoomExpirationAt(state));
 	}
 }
 

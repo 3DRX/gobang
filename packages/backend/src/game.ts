@@ -1,4 +1,6 @@
 export const BOARD_SIZE = 15;
+export const UNFINISHED_ROOM_TTL_MS = 2 * 60 * 60 * 1000;
+export const FINISHED_ROOM_TTL_MS = 15 * 60 * 1000;
 
 export type Seat = "black" | "white";
 export type Cell = Seat | null;
@@ -71,6 +73,16 @@ export interface GameState {
 export type MoveResult =
 	| { ok: true; state: StoredGameState }
 	| { ok: false; code: MoveErrorCode; message: string };
+
+export interface CleanupPolicy {
+	unfinishedRoomTtlMs: number;
+	finishedRoomTtlMs: number;
+}
+
+export const DEFAULT_CLEANUP_POLICY: CleanupPolicy = {
+	unfinishedRoomTtlMs: UNFINISHED_ROOM_TTL_MS,
+	finishedRoomTtlMs: FINISHED_ROOM_TTL_MS,
+};
 
 const DIRECTIONS = [
 	[1, 0],
@@ -181,6 +193,24 @@ export function applyMove(
 
 export function isInBounds(x: number, y: number): boolean {
 	return x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE;
+}
+
+export function getRoomExpirationAt(
+	state: StoredGameState,
+	policy: CleanupPolicy = DEFAULT_CLEANUP_POLICY,
+): number {
+	const updatedAt = Date.parse(state.updatedAt);
+	const ttl = state.status === "finished" ? policy.finishedRoomTtlMs : policy.unfinishedRoomTtlMs;
+
+	return updatedAt + ttl;
+}
+
+export function shouldDeleteRoom(
+	state: StoredGameState,
+	now = Date.now(),
+	policy: CleanupPolicy = DEFAULT_CLEANUP_POLICY,
+): boolean {
+	return now >= getRoomExpirationAt(state, policy);
 }
 
 function cloneBoard(board: Cell[][]): Cell[][] {

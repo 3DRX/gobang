@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyMove, createInitialState } from "../src/game.ts";
+import {
+	applyMove,
+	createInitialState,
+	getRoomExpirationAt,
+	shouldDeleteRoom,
+} from "../src/game.ts";
 
 test("detects horizontal wins", () => {
 	const state = play([
@@ -130,6 +135,35 @@ test("alternates turns and rejects moves after the game ends", () => {
 	const afterWin = applyMove(state, "white", 4, 1);
 	assert.equal(afterWin.ok, false);
 	assert.equal(afterWin.code, "game_over");
+});
+
+test("expires unfinished rooms after the unfinished ttl", () => {
+	const state = createInitialState("test-room", "2026-05-06T00:00:00.000Z");
+	const policy = { unfinishedRoomTtlMs: 1_000, finishedRoomTtlMs: 100 };
+
+	assert.equal(getRoomExpirationAt(state, policy), Date.parse("2026-05-06T00:00:01.000Z"));
+	assert.equal(shouldDeleteRoom(state, Date.parse("2026-05-06T00:00:00.999Z"), policy), false);
+	assert.equal(shouldDeleteRoom(state, Date.parse("2026-05-06T00:00:01.000Z"), policy), true);
+});
+
+test("expires finished rooms after the shorter finished ttl", () => {
+	let state = play([
+		[0, 0],
+		[0, 1],
+		[1, 0],
+		[1, 1],
+		[2, 0],
+		[2, 1],
+		[3, 0],
+		[3, 1],
+		[4, 0],
+	]);
+	state = { ...state, updatedAt: "2026-05-06T00:00:00.000Z" };
+	const policy = { unfinishedRoomTtlMs: 1_000, finishedRoomTtlMs: 100 };
+
+	assert.equal(getRoomExpirationAt(state, policy), Date.parse("2026-05-06T00:00:00.100Z"));
+	assert.equal(shouldDeleteRoom(state, Date.parse("2026-05-06T00:00:00.099Z"), policy), false);
+	assert.equal(shouldDeleteRoom(state, Date.parse("2026-05-06T00:00:00.100Z"), policy), true);
 });
 
 function play(points) {
