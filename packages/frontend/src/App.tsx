@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import './App.css'
 
 const BOARD_SIZE = 15
@@ -327,6 +328,7 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
                   key={`${x}-${y}`}
                   onClick={() => placeStone(x, y)}
                   role="gridcell"
+                  style={getBoardPointStyle(x, y)}
                   type="button"
                 >
                   <span aria-hidden="true" />
@@ -536,6 +538,14 @@ function formatClock(timeRemainingMs: number | null): string {
 
 function pointKey(x: number, y: number): string {
   return `${x}:${y}`
+}
+
+function getBoardPointStyle(x: number, y: number): CSSProperties {
+  const intervalCount = BOARD_SIZE - 1
+  return {
+    left: `${(x / intervalCount) * 100}%`,
+    top: `${(y / intervalCount) * 100}%`,
+  }
 }
 
 function shortRoomId(roomId: string): string {
