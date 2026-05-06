@@ -156,6 +156,7 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
   const [pendingPoint, setPendingPoint] = useState<PendingPoint | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [dismissedResultMove, setDismissedResultMove] = useState<number | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<number | null>(null)
   const terminalRef = useRef(false)
@@ -258,6 +259,7 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
     !state.board[pendingPoint.y]?.[pendingPoint.x]
       ? pendingPoint
       : null
+  const showResultPopup = Boolean(state?.winner && dismissedResultMove !== state.moveCount)
 
   const placeStone = (x: number, y: number) => {
     if (!canPlay || !state || state.board[y]?.[x]) {
@@ -364,7 +366,66 @@ function RoomScreen({ roomId, navigate }: { roomId: string; navigate: (path: str
           </div>
         ) : null}
       </aside>
+
+      {state?.winner && showResultPopup ? (
+        <MatchResultPopup
+          isWinner={state.winner === seat}
+          onClose={() => setDismissedResultMove(state.moveCount)}
+          onNewRoom={() => navigate('/')}
+          state={state}
+        />
+      ) : null}
     </main>
+  )
+}
+
+function MatchResultPopup({
+  isWinner,
+  onClose,
+  onNewRoom,
+  state,
+}: {
+  isWinner: boolean
+  onClose: () => void
+  onNewRoom: () => void
+  state: GameState
+}) {
+  const winner = state.winner ?? 'black'
+  const resultTitle = isWinner ? 'You won' : 'You lost'
+  const resultDetail = state.timedOutSeat
+    ? `${seatLabel(state.timedOutSeat)} ran out of time.`
+    : `${seatLabel(winner)} completed five in a row.`
+
+  return (
+    <div className={`result-overlay ${isWinner ? 'is-winner' : ''}`} role="presentation">
+      {isWinner ? <CelebrationEffect /> : null}
+      <section aria-labelledby="result-title" aria-modal="true" className="result-dialog" role="dialog">
+        <div className={`result-stone stone-${winner}`} aria-hidden="true">
+          <span />
+        </div>
+        <p className="eyebrow">Result</p>
+        <h2 id="result-title">{resultTitle}</h2>
+        <p>{resultDetail}</p>
+        <div className="result-actions">
+          <button className="primary-action" onClick={onNewRoom} type="button">
+            New room
+          </button>
+          <button className="ghost-action" onClick={onClose} type="button">
+            Review board
+          </button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function CelebrationEffect() {
+  return (
+    <div className="celebration-effect" aria-hidden="true">
+      {Array.from({ length: 18 }, (_, index) => (
+        <span key={index} />
+      ))}
+    </div>
   )
 }
 
